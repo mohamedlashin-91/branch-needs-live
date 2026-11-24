@@ -7,6 +7,8 @@ from build_live import SITE, get_json
 url = os.environ['STOCK_URL'].strip()
 key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
 print(f'::add-mask::{key}')
+import urllib.parse
+print(f'::add-mask::{urllib.parse.urlparse(url).hostname}')
 ref = get_json(f'{SITE}lr_{key}.json')
 print(f"::add-mask::{ref['sx']}")
 json.dump(ref, open('ref.json', 'w'))

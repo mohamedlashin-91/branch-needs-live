@@ -12,7 +12,7 @@ Each run:
 If any step fails, nothing is published and the site keeps the last good live stock (or the morning stock).
 Env: STOCK_URL (repository secret). Output folder: site/
 """
-import hashlib, json, os, re, subprocess, sys, time, urllib.request
+import hashlib, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 import numpy as np
 from python_calamine import CalamineWorkbook
@@ -41,18 +41,18 @@ def code(v):
     return str(v).strip()
 
 
-def download(url, path, tries=3):
+def download(url, path, tries=2):
     if os.environ.get('LOCAL_STOCK'):                     # local test: use a stock file already downloaded
         return datetime.strptime(os.environ['LOCAL_STOCK_TIME'], '%Y-%m-%d %H:%M').replace(tzinfo=RIYADH), os.environ['LOCAL_STOCK']
     for k in range(tries):
         t0 = datetime.now(RIYADH)
-        r = subprocess.run(['curl', '-sS', '--fail', '--max-time', '1200', '-o', path, '-X', 'POST',
+        r = subprocess.run(['curl', '-sS', '--fail', '--max-time', '900', '-o', path, '-X', 'POST',
                             '--data-urlencode', 'warehouse_option=all', '--data-urlencode', 'warehouse_codes=',
                             '--data-urlencode', 'sku_option=all', '--data-urlencode', 'skus=',
                             '--data-urlencode', 'download_excel=1', url], capture_output=True, text=True)
         ok = r.returncode == 0 and os.path.exists(path) and os.path.getsize(path) > 1_000_000
         print(f'download try {k + 1}: exit {r.returncode}, {os.path.getsize(path) if os.path.exists(path) else 0} bytes, '
-              f'{(datetime.now(RIYADH) - t0).seconds}s', (r.stderr or '').strip()[:120])
+              f'{(datetime.now(RIYADH) - t0).seconds}s')
         if ok:
             return t0, path
         time.sleep(60)
@@ -63,7 +63,7 @@ def publish_off(why):
     """Kill switch: publish only a meta.json the site will not accept (sx 'off'), so pages show the morning numbers."""
     url = os.environ['STOCK_URL'].strip()
     key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
-    print(f'::add-mask::{key}')
+    print(f'::add-mask::{key}'); print(f'::add-mask::{urllib.parse.urlparse(url).hostname}')
     os.makedirs(f'{OUT}/{key}', exist_ok=True)
     json.dump({'t': datetime.now(RIYADH).strftime('%Y-%m-%d %H:%M'), 'sx': 'off'}, open(f'{OUT}/{key}/meta.json', 'w'))
     open(f'{OUT}/index.html', 'w').write('<!doctype html><title>.</title>')
@@ -77,7 +77,7 @@ def main():
         return publish_off('live/OFF is present')
     url = os.environ['STOCK_URL'].strip()
     key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
-    print(f'::add-mask::{key}')
+    print(f'::add-mask::{key}'); print(f'::add-mask::{urllib.parse.urlparse(url).hostname}')
     ref = json.load(open('ref.json')) if os.path.exists('ref.json') else get_json(f'{SITE}lr_{key}.json')
     sx, codes, BR = ref['sx'], ref['codes'], ref['br']
     print(f'::add-mask::{sx}')
@@ -114,6 +114,19 @@ def main():
     for a, b in zip(*nz):
         qn[(sis[b], items[a])] = int(A[a, b])
     in_file = set(sis)
+    tm, tn = {}, {}
+    for (si, _), q in qm.items():
+        tm[si] = tm.get(si, 0) + q
+    for (si, _), q in qn.items():
+        tn[si] = tn.get(si, 0) + max(q, 0)
+    bad = sorted(si for si in in_file if tm.get(si, 0) >= 50 and tn.get(si, 0) < 0.2 * tm[si])
+    if bad:
+        print('branch columns that look empty or broken, kept on the morning stock:', ', '.join(codes[i] for i in bad))
+        in_file -= set(bad)
+        qn = {k_: v for k_, v in qn.items() if k_[0] in in_file}
+    dup = len(items) - len(set(items))
+    if dup:
+        print('duplicate item rows in the file:', dup)
 
     # changes since the morning, per branch (si): {item: new - morning}
     chg = {}
