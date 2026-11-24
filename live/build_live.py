@@ -59,7 +59,22 @@ def download(url, path, tries=3):
     sys.exit('stock website did not answer - nothing published this time')
 
 
+def publish_off(why):
+    """Kill switch: publish only a meta.json the site will not accept (sx 'off'), so pages show the morning numbers."""
+    url = os.environ['STOCK_URL'].strip()
+    key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
+    print(f'::add-mask::{key}')
+    os.makedirs(f'{OUT}/{key}', exist_ok=True)
+    json.dump({'t': datetime.now(RIYADH).strftime('%Y-%m-%d %H:%M'), 'sx': 'off'}, open(f'{OUT}/{key}/meta.json', 'w'))
+    open(f'{OUT}/index.html', 'w').write('<!doctype html><title>.</title>')
+    open(f'{OUT}/robots.txt', 'w').write('User-agent: *\nDisallow: /\n')
+    open(f'{OUT}/.nojekyll', 'w').write('')
+    print('live stock switched off:', why)
+
+
 def main():
+    if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'OFF')):
+        return publish_off('live/OFF is present')
     url = os.environ['STOCK_URL'].strip()
     key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
     print(f'::add-mask::{key}')
