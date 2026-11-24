@@ -59,11 +59,16 @@ jobs:
       - id: deployment2
         if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v4
-      - name: Delete the uploaded copy (on a public repo it could be downloaded)
-        if: always() && steps.upload.outputs.artifact_id != ''
+      - name: Delete the uploaded copies (on a public repo they could be downloaded)
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh api --method DELETE "/repos/${{ github.repository }}/actions/artifacts/${{ steps.upload.outputs.artifact_id }}" > /dev/null && echo "uploaded copy deleted"
+        run: |
+          n=0
+          for id in $(gh api "/repos/${{ github.repository }}/actions/artifacts?name=github-pages&per_page=100" --jq '.artifacts[].id'); do
+            gh api --method DELETE "/repos/${{ github.repository }}/actions/artifacts/$id" > /dev/null && n=$((n+1))
+          done
+          echo "uploaded copies deleted: $n"
       - name: Keep the schedule on (GitHub pauses schedules after 60 days without a commit)
         run: |
           if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -gt 2592000 ]; then
