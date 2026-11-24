@@ -1,0 +1,48 @@
+name: Live branch stock
+# Every 30 minutes from 10:07 AM to 12:07 AM Riyadh time (GitHub times are UTC = Riyadh - 3 h).
+# Publishes branch stock only (no warehouse stock) for the Branch Needs site. Manual run: Actions > Run workflow.
+on:
+  schedule:
+    - cron: '7,37 7-20 * * *'
+    - cron: '7 21 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: live-stock
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -q python-calamine numpy
+      - name: Read the day's link file
+        id: ref
+        env:
+          STOCK_URL: ${{ secrets.STOCK_URL }}
+        run: python3 live/ref.py
+      - name: Morning stock (once per build)
+        uses: actions/cache@v4
+        with:
+          path: morning
+          key: morning-${{ steps.ref.outputs.build }}
+      - name: Download the website stock and build the files
+        env:
+          STOCK_URL: ${{ secrets.STOCK_URL }}
+        run: python3 live/build_live.py
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
