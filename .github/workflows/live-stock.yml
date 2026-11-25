@@ -1,5 +1,7 @@
 name: Live branch stock
 # Every 30 minutes from 10:07 AM to 12:07 AM Riyadh time (GitHub times are UTC = Riyadh - 3 h).
+# GitHub's own schedule is often late or skipped, so each run also starts the next one itself (job "next"),
+# at the next :07 / :37 slot, until 12:07 AM. The schedule below only has to fire once in the morning.
 # Publishes branch stock only (no warehouse stock) for the Branch Needs site. Manual run: Actions > Run workflow.
 on:
   schedule:
@@ -77,3 +79,33 @@ jobs:
             git commit --allow-empty -q -m "Keep the live stock schedule active"
             git push -q
           fi
+
+  next:
+    # Start the next run at the next :07 / :37 slot (10:07 AM - 12:07 AM Riyadh), even if this run failed.
+    # Only one run of this workflow can run at a time and only one can wait (concurrency above), so there is
+    # never more than one chain: a scheduled run that comes in meanwhile simply takes the waiting place.
+    needs: publish
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Wait for the next half hour, then start the next run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          wait=$(python3 - <<'PY'
+          import datetime as dt
+          now = dt.datetime.now(dt.timezone.utc)
+          t = now.replace(second=0, microsecond=0)
+          while not (t.minute in (7, 37) and (t - now).total_seconds() >= 150):
+              t += dt.timedelta(minutes=1)
+          day = 7 <= t.hour <= 20 or (t.hour == 21 and t.minute == 7)
+          print(int((t - now).total_seconds()) - 40 if day else -1)
+          PY
+          )
+          if [ "$wait" -lt 0 ]; then echo "last run of the day - the schedule starts tomorrow's runs"; exit 0; fi
+          echo "next run in $(( (wait + 40) / 60 )) minutes"
+          sleep "$wait"
+          gh workflow run live-stock.yml --repo "${{ github.repository }}" --ref main
+          echo "next run started"
+
