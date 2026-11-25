@@ -9,6 +9,8 @@ Each run:
        b/<store>.json    for each of your branches: o = its own items whose stock changed since the morning
                          (new quantity), d = {partner si: {item: change since the morning}} for its partners / items
        i/<00-99>.json    Find Item: {item: [[si, quantity], ...]} for every catalog branch that holds it now
+       s.json            for the area / supervisor overviews: o = {store: its own changed items (new quantity)},
+                         na = stores not in this stock file (kept on the morning stock)
 If any step fails, nothing is published and the site keeps the last good live stock (or the morning stock).
 Env: STOCK_URL (repository secret). Output folder: site/
 """
@@ -147,6 +149,14 @@ def main():
             if x:
                 dd[str(p)] = x
         json.dump({'t': tstr, 'sx': sx, 'o': own, 'd': dd}, open(f'{OUT}/{key}/b/{c}.json', 'w'), separators=(',', ':'))
+    so, na = {}, []
+    for c, v in BR.items():
+        if v['me'] in in_file:
+            its = set(v['it'])
+            so[c] = {it: qn.get((v['me'], it), 0) for it in chg.get(v['me'], {}) if it in its}
+        else:
+            na.append(c)
+    json.dump({'t': tstr, 'sx': sx, 'o': so, 'na': sorted(na)}, open(f'{OUT}/{key}/s.json', 'w'), separators=(',', ':'))
     sh = {}
     for (si, it), q in qn.items():
         if q >= 1:
