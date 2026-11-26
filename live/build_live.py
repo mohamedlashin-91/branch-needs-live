@@ -65,7 +65,43 @@ def download(url, path, tries=4):
             return t0, path
         if k < tries - 1:
             time.sleep(60 * (k + 1))                      # the website is sometimes busy: wait 1, 2, 3 minutes
-    sys.exit('stock website did not answer - nothing published this time')
+    return None
+
+
+def carry_over(url, key, ref):
+    """Once, after the live folder got a new name (26 Nov 2026): when the website gives no stock, publish the last good
+    stock under the new name (copied from the old folder), so the old folder disappears from GitHub Pages."""
+    pages = 'https://mohamedlashin-91.github.io/branch-needs-live/'
+    try:
+        get_json(f'{pages}{key}/meta.json', tries=1)
+        return False                                      # the new folder is already live: nothing to carry over
+    except Exception:
+        pass
+    old = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
+    print(f'::add-mask::{old}')
+    try:
+        m = get_json(f'{pages}{old}/meta.json')
+        if m.get('sx') != ref['sx']:
+            return False
+        os.makedirs(f'{OUT}/{key}/b', exist_ok=True); os.makedirs(f'{OUT}/{key}/i', exist_ok=True)
+        for c in ref['br']:
+            json.dump(get_json(f'{pages}{old}/b/{c}.json'), open(f'{OUT}/{key}/b/{c}.json', 'w'), separators=(',', ':'))
+        for k in range(100):
+            json.dump(get_json(f'{pages}{old}/i/{k:02d}.json'), open(f'{OUT}/{key}/i/{k:02d}.json', 'w'), separators=(',', ':'))
+        try:
+            json.dump(get_json(f'{pages}{old}/s.json'), open(f'{OUT}/{key}/s.json', 'w'), separators=(',', ':'))
+        except Exception:
+            pass
+        json.dump(m, open(f'{OUT}/{key}/meta.json', 'w'))
+    except Exception as e:
+        print('carry-over failed:', type(e).__name__)
+        return False
+    open(f'{OUT}/index.html', 'w').write('<!doctype html><title>.</title>')
+    open(f'{OUT}/robots.txt', 'w').write('User-agent: *\nDisallow: /\n')
+    open(f'{OUT}/.nojekyll', 'w').write('')
+    open('carried.flag', 'w').write('1')
+    print('the website gave no stock: published the last good stock of', m.get('t'), 'under the new folder name')
+    return True
 
 
 def publish_off(why):
@@ -166,7 +202,12 @@ def main():
                     spm[(si, it)] = sp
     print('morning stock lines', len(qm))
 
-    t0, path = download(url, 'stock.xlsx')
+    got = download(url, 'stock.xlsx')
+    if got is None:
+        if not os.environ.get('LOCAL_SITE') and carry_over(url, key, ref):
+            return
+        sys.exit('stock website did not answer - nothing published this time')
+    t0, path = got
     wb = CalamineWorkbook.from_path(path)
     r = wb.get_sheet_by_name(wb.sheet_names[0]).to_python()
     hdr = [str(x).strip() for x in r[0]]

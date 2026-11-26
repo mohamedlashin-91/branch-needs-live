@@ -121,7 +121,7 @@ jobs:
             gh issue edit "$n" --repo "${{ github.repository }}" --body "$body"
           fi
       - name: Close the alert when the stock updates again
-        if: success()
+        if: success() && hashFiles('carried.flag') == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
