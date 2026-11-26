@@ -62,18 +62,22 @@ jobs:
           path: morning
           key: morning-${{ steps.ref.outputs.build }}
       - name: Download the website stock and build the files
+        id: build
         env:
           STOCK_URL: ${{ secrets.STOCK_URL }}
           STOCK_EXPORT_URL: ${{ secrets.STOCK_EXPORT_URL }}
           STOCK_HEADER: ${{ secrets.STOCK_HEADER }}
         run: python3 -u live/build_live.py
       - uses: actions/configure-pages@v5
+        if: steps.build.outputs.published == 'true'
       - id: upload
+        if: steps.build.outputs.published == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: site
           retention-days: 1
       - id: deployment
+        if: steps.build.outputs.published == 'true'
         uses: actions/deploy-pages@v4
         continue-on-error: true
       - name: Retry the publish once
@@ -93,7 +97,7 @@ jobs:
           done
           echo "uploaded copies deleted: $n"
       - name: Alert when the stock has not updated for over 75 minutes (opens one issue; GitHub emails the owner)
-        if: failure()
+        if: failure() || steps.build.outputs.published == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           STOCK_URL: ${{ secrets.STOCK_URL }}
@@ -123,7 +127,7 @@ jobs:
             gh issue edit "$n" --repo "${{ github.repository }}" --body "$body"
           fi
       - name: Close the alert when the stock updates again
-        if: success() && hashFiles('carried.flag') == ''
+        if: success() && steps.build.outputs.published == 'true' && hashFiles('carried.flag') == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

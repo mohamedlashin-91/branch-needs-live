@@ -90,6 +90,16 @@ def download(url, path, tries=4):
     return None
 
 
+def mark(published, why=''):
+    """Tell the workflow whether this run published (the Pages steps run only then). A run that publishes nothing
+    because the website refused the stock is not a failure: no "Run failed" email; the stale alert covers it."""
+    with open(os.environ.get('GITHUB_OUTPUT', os.devnull), 'a') as f:
+        f.write(f"published={'true' if published else 'false'}\n")
+    if not published:
+        print(why)
+        sys.exit(0)
+
+
 def carry_over(url, key, ref):
     """Once, after the live folder got a new name (26 Nov 2026): when the website gives no stock, publish the last good
     stock under the new name (copied from the old folder), so the old folder disappears from GitHub Pages."""
@@ -123,6 +133,7 @@ def carry_over(url, key, ref):
     open(f'{OUT}/.nojekyll', 'w').write('')
     open('carried.flag', 'w').write('1')
     print('the website gave no stock: published the last good stock of', m.get('t'), 'under the new folder name')
+    mark(True)
     return True
 
 
@@ -137,6 +148,7 @@ def publish_off(why):
     open(f'{OUT}/robots.txt', 'w').write('User-agent: *\nDisallow: /\n')
     open(f'{OUT}/.nojekyll', 'w').write('')
     print('live stock switched off:', why)
+    mark(True)
 
 
 
@@ -145,7 +157,10 @@ def laptop_stock(key, ref, si_of):
     to a small Firebase site. Used when the website gives the server no stock, and only when it is newer than both
     the morning stock and the live stock already on the branch pages. Returns (time, items, branch si list, qn) or None."""
     if os.environ.get('LOCAL_PC'):                         # local test: a pc.json.gz file
-        raw = open(os.environ['LOCAL_PC'], 'rb').read()
+        raw = open(os.environ['LOCAL_PC'], 'rb').read() if os.path.exists(os.environ['LOCAL_PC']) else None
+        if raw is None:
+            print('laptop backup: no stock file found')
+            return None
     else:
         raw = None
         for s in PC_SITES:
@@ -294,12 +309,12 @@ def main():
         if lap is None:
             if not os.environ.get('LOCAL_SITE') and carry_over(url, key, ref):
                 return
-            sys.exit('stock website did not answer and the laptop has no newer stock - nothing published this time')
+            mark(False, 'stock website did not answer and the laptop has no newer stock - nothing published this time')
         tstr, items, sis, qn = lap
         cols = sis
     print(f'stock rows {len(items)}, catalog branches in the file {len(cols)} of {len(codes)}')
     if len(items) < 20000 or len(cols) < 0.8 * len(codes):
-        sys.exit('stock file looks incomplete - nothing published this time')
+        mark(False, 'stock file looks incomplete - nothing published this time')
     in_file = set(sis)
     tm, tn = {}, {}
     for (si, _), q in qm.items():
@@ -364,6 +379,7 @@ def main():
     open(f'{OUT}/robots.txt', 'w').write('User-agent: *\nDisallow: /\n')
     open(f'{OUT}/.nojekyll', 'w').write('')
     print(f'published stock of {tstr}: {len(BR)} branch files, {sum(len(v) for v in chg.values())} changed lines since the morning')
+    mark(True)
 
 
 if __name__ == '__main__':
