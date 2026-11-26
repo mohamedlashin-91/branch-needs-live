@@ -19,6 +19,7 @@ permissions:
   pages: write
   id-token: write
   actions: write
+  issues: write
 concurrency:
   group: live-stock
   cancel-in-progress: false
@@ -63,7 +64,7 @@ jobs:
       - name: Download the website stock and build the files
         env:
           STOCK_URL: ${{ secrets.STOCK_URL }}
-        run: python3 live/build_live.py
+        run: python3 -u live/build_live.py
       - uses: actions/configure-pages@v5
       - id: upload
         uses: actions/upload-pages-artifact@v3
@@ -89,6 +90,42 @@ jobs:
             gh api --method DELETE "/repos/${{ github.repository }}/actions/artifacts/$id" > /dev/null && n=$((n+1))
           done
           echo "uploaded copies deleted: $n"
+      - name: Alert when the stock has not updated for over 75 minutes (opens one issue; GitHub emails the owner)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STOCK_URL: ${{ secrets.STOCK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          last=$(python3 - <<'PY'
+          import hashlib, json, os, urllib.request
+          from datetime import datetime, timedelta, timezone
+          k = hashlib.sha256((os.environ['STOCK_URL'].strip() + '|bn-live').encode()).hexdigest()[:24]
+          print(f'::add-mask::{k}')
+          try:
+              m = json.load(urllib.request.urlopen(f'https://mohamedlashin-91.github.io/branch-needs-live/{k}/meta.json', timeout=30))
+              t = datetime.strptime(m['t'], '%Y-%m-%d %H:%M').replace(tzinfo=timezone(timedelta(hours=3)))
+              age = (datetime.now(timezone.utc) - t).total_seconds() / 60
+              print(f"{m['t']} {int(age)}")
+          except Exception:
+              print('unknown 999')
+          PY
+          )
+          t=${last% *}; age=${last##* }
+          echo "last good stock: $t ($age minutes ago)"
+          [ "$age" -lt 75 ] && exit 0
+          n=$(gh issue list --repo "${{ github.repository }}" --state open --search "Live stock is not updating in:title" --json number --jq 'length')
+          if [ "$n" = "0" ]; then
+            gh issue create --repo "${{ github.repository }}" --title "Live stock is not updating" --body "The live branch stock has not updated since $t (Riyadh). The latest run could not get the stock Excel file from the store website: $RUN_URL. Branch pages keep the last good stock and show 'Not updated since'. This issue closes itself when the stock updates again."
+          fi
+      - name: Close the alert when the stock updates again
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list --repo "${{ github.repository }}" --state open --search "Live stock is not updating in:title" --json number --jq '.[].number'); do
+            gh issue close "$n" --repo "${{ github.repository }}" --comment "Updating again ($(TZ=Asia/Riyadh date '+%d %b %H:%M') Riyadh)."
+          done
       - name: Keep the schedule on (GitHub pauses schedules after 60 days without a commit)
         run: |
           if [ $(( $(date +%s) - $(git log -1 --format=%ct) )) -gt 2592000 ]; then
@@ -104,7 +141,7 @@ jobs:
     # run starts by itself. Only one run can run and one wait at a time (concurrency above), so there is never
     # more than one chain: a backup scheduled run that comes in meanwhile simply takes the waiting place.
     needs: [when, publish]
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 355
     steps:
@@ -135,7 +172,7 @@ jobs:
   rescue:
     # Only if "next" did not start the next run (GitHub error, runner lost): start it now, retrying.
     needs: next
-    if: always() && needs.next.result != 'success'
+    if: ${{ !cancelled() && needs.next.result != 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
