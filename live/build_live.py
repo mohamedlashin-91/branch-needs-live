@@ -89,14 +89,16 @@ def main():
     # morning stock per (si, item) from the morning Find Item files (cached for this build)
     mdir = f'morning/{sx}'
     os.makedirs(mdir, exist_ok=True)
-    qm = {}
+    qm, spm = {}, {}
     for k in range(100):
         f = f'{mdir}/{k:02d}.json'
         if not os.path.exists(f):
             json.dump(get_json(f'{SITE}x_{sx}_{k:02d}.json'), open(f, 'w'))
         for it, L in json.load(open(f)).items():
-            for si, q, _ in L:
+            for si, q, sp in L:
                 qm[(si, it)] = q
+                if sp:
+                    spm[(si, it)] = sp
     print('morning stock lines', len(qm))
 
     t0, path = download(url, 'stock.xlsx')
@@ -140,6 +142,44 @@ def main():
             chg.setdefault(k_[0], {})[k_[1]] = dq
     tstr = t0.strftime('%Y-%m-%d %H:%M')
     os.makedirs(f'{OUT}/{key}/b', exist_ok=True); os.makedirs(f'{OUT}/{key}/i', exist_ok=True)
+
+    # transfer lines: how much of each planned line is still worth moving now (same answer for both branches)
+    # v = [sender spare now or -1, receiver need/room now or -1, receiver stock increase]; the page takes
+    # min(planned qty, sender spare, receiver need/room - or planned qty minus the increase when unknown)
+    pc = {}
+    PN, PR, PS = ref.get('pn', {}), ref.get('pr', {}), ref.get('ps', {})
+    dlt = lambda si, it: (qn.get((si, it), 0) - qm.get((si, it), 0)) if si in in_file else 0
+    nl = 0
+    for S, R, it, qx in ref.get('pl', []):
+        dS, dR = dlt(S, it), dlt(R, it)
+        if not dS and not dR:
+            continue
+        b0 = spm.get((S, it))
+        if b0 is None:
+            b0 = PS.get(str(S), {}).get(it)
+        sc = -1 if b0 is None or not dS else max(0, b0 + dS)         # -1: unknown or unchanged since the morning
+        n = PN.get(str(R), {}).get(it)
+        if n is not None:
+            dem, soh, ordm, need = n
+            if dR:
+                q = qn.get((R, it), 0)
+                ordn = max(0, ordm - max(0, q - soh)); pos = q + ordn
+                rc = 0 if pos >= 0.5 * dem else max(1, int(round(need + (soh + ordm - pos))))
+            else:
+                rc = -1
+        elif dR and str(R) in PR and it in PR[str(R)]:
+            rc = max(0, PR[str(R)][it] - dR)
+        else:
+            rc = -1
+        ri = max(0, dR)
+        cap = min(sc if sc >= 0 else qx, rc if rc >= 0 else max(0, qx - ri))
+        if cap >= qx:
+            continue
+        v = [sc, rc, ri]
+        pc.setdefault(S, {})[f'{R}:{it}'] = v
+        pc.setdefault(R, {})[f'{S}:{it}'] = v
+        nl += 1
+    print(f'transfer lines checked {len(ref.get("pl", []))}, reduced now {nl}')
     for c, v in BR.items():
         me, its = v['me'], set(v['it'])
         own = {it: qn.get((me, it), 0) for it in chg.get(me, {})}
@@ -148,7 +188,7 @@ def main():
             x = {it: dq for it, dq in chg.get(p, {}).items() if it in its}
             if x:
                 dd[str(p)] = x
-        json.dump({'t': tstr, 'sx': sx, 'o': own, 'd': dd}, open(f'{OUT}/{key}/b/{c}.json', 'w'), separators=(',', ':'))
+        json.dump({'t': tstr, 'sx': sx, 'o': own, 'd': dd, 'pc': pc.get(me, {})}, open(f'{OUT}/{key}/b/{c}.json', 'w'), separators=(',', ':'))
     so, na = {}, []
     for c, v in BR.items():
         if v['me'] in in_file:
