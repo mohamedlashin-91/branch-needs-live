@@ -14,12 +14,14 @@ Each run:
 If any step fails, nothing is published and the site keeps the last good live stock (or the morning stock).
 Env: STOCK_URL (repository secret). Output folder: site/
 """
-import hashlib, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
+import gzip, hashlib, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, timezone
 import numpy as np
 from python_calamine import CalamineWorkbook
 
 SITE = 'https://branch-needs.web.app/data/'
+PAGES = 'https://mohamedlashin-91.github.io/branch-needs-live/'
+PC_SITES = ['branch-needs-stock', 'branch-needs-stock-pc', 'innova-branch-needs-stock', 'branch-needs-live-stock']
 RIYADH = timezone(timedelta(hours=3))
 OUT = 'site'
 
@@ -47,6 +49,8 @@ def download(url, path, tries=4):
     """POST the export form. Optional repository secrets, for when the website team allows this job in:
     STOCK_EXPORT_URL (a different export address) and STOCK_HEADER (one extra request header, "Name: value").
     A bot-check page is not retried: waiting a few minutes does not get past it, and retries only add load."""
+    if os.environ.get('LOCAL_NO_WEB'):                    # local test: the website gives nothing
+        return None
     if os.environ.get('LOCAL_STOCK'):                     # local test: use a stock file already downloaded
         return datetime.strptime(os.environ['LOCAL_STOCK_TIME'], '%Y-%m-%d %H:%M').replace(tzinfo=RIYADH), os.environ['LOCAL_STOCK']
     url = os.environ.get('STOCK_EXPORT_URL', '').strip() or url
@@ -136,6 +140,55 @@ def publish_off(why):
 
 
 
+def laptop_stock(key, ref, si_of):
+    """The laptop backup (pc-live.js, every 30 minutes while the laptop is on) uploads the branch stock it downloaded
+    to a small Firebase site. Used when the website gives the server no stock, and only when it is newer than both
+    the morning stock and the live stock already on the branch pages. Returns (time, items, branch si list, qn) or None."""
+    if os.environ.get('LOCAL_PC'):                         # local test: a pc.json.gz file
+        raw = open(os.environ['LOCAL_PC'], 'rb').read()
+    else:
+        raw = None
+        for s in PC_SITES:
+            try:
+                req = urllib.request.Request(f'https://{s}.web.app/{key}/pc.json.gz', headers={'Cache-Control': 'no-cache'})
+                with urllib.request.urlopen(req, timeout=120) as r:
+                    raw = r.read()
+                break
+            except Exception:
+                continue
+        if raw is None:
+            print('laptop backup: no stock file found')
+            return None
+    try:
+        d = json.loads(gzip.decompress(raw) if raw[:2] == b'\x1f\x8b' else raw)
+    except Exception as e:
+        print('laptop backup: file not readable', type(e).__name__)
+        return None
+    t = str(d.get('t', ''))
+    floor = f"{ref.get('stock_date', '')} {ref.get('stock_time', '')}".strip()
+    last = ''
+    if not os.environ.get('LOCAL_SITE'):
+        try:
+            last = get_json(f'{PAGES}{key}/meta.json', tries=1).get('t', '')
+        except Exception:
+            pass
+    print(f'laptop backup: stock of {t} (morning stock {floor}, branch pages now {last or "-"})')
+    if not re.match(r'^\d{4}-\d\d-\d\d \d\d:\d\d$', t) or t <= floor or (last and t <= last):
+        print('laptop backup: not newer - not used')
+        return None
+    items = [str(x) for x in d['it']]
+    sis, qn = [], {}
+    for c in d['c']:
+        si = si_of.get(c)
+        if si is None:
+            continue
+        sis.append(si)
+        L = d['q'].get(c, [])
+        for i in range(0, len(L) - 1, 2):
+            qn[(si, items[L[i]])] = int(L[i + 1])
+    return t, items, sis, qn
+
+
 def alloc_lines(ref, qn, qm, spm, in_file):
     """Live quantity of every planned transfer line, per scope. Returns {si: {"<scope>|<partner si>:<item>": [qty, why]}}
     only for lines now smaller than planned (why: c = receiver covered / has enough, s = sender has no spare, l = less)."""
@@ -221,26 +274,32 @@ def main():
     print('morning stock lines', len(qm))
 
     got = download(url, 'stock.xlsx')
-    if got is None:
-        if not os.environ.get('LOCAL_SITE') and carry_over(url, key, ref):
-            return
-        sys.exit('stock website did not answer - nothing published this time')
-    t0, path = got
-    wb = CalamineWorkbook.from_path(path)
-    r = wb.get_sheet_by_name(wb.sheet_names[0]).to_python()
-    hdr = [str(x).strip() for x in r[0]]
-    cols = [j for j, h in enumerate(hdr) if re.match(r'^\d{5}-\d{4}$', h) and h in si_of]   # branches only (no WAH warehouses)
-    items = [code(row[0]) for row in r[2:]]
-    A = np.array([[row[j] if isinstance(row[j], (int, float)) else 0 for j in cols] for row in r[2:]], dtype=float)
-    A = np.rint(np.nan_to_num(A)).astype(int)
-    sis = [si_of[hdr[j]] for j in cols]
+    if got is not None:
+        t0, path = got
+        tstr = t0.strftime('%Y-%m-%d %H:%M')
+        wb = CalamineWorkbook.from_path(path)
+        r = wb.get_sheet_by_name(wb.sheet_names[0]).to_python()
+        hdr = [str(x).strip() for x in r[0]]
+        cols = [j for j, h in enumerate(hdr) if re.match(r'^\d{5}-\d{4}$', h) and h in si_of]   # branches only (no WAH warehouses)
+        items = [code(row[0]) for row in r[2:]]
+        A = np.array([[row[j] if isinstance(row[j], (int, float)) else 0 for j in cols] for row in r[2:]], dtype=float)
+        A = np.rint(np.nan_to_num(A)).astype(int)
+        sis = [si_of[hdr[j]] for j in cols]
+        qn = {}
+        nz = np.nonzero(A)
+        for a, b in zip(*nz):
+            qn[(sis[b], items[a])] = int(A[a, b])
+    else:
+        lap = laptop_stock(key, ref, si_of)
+        if lap is None:
+            if not os.environ.get('LOCAL_SITE') and carry_over(url, key, ref):
+                return
+            sys.exit('stock website did not answer and the laptop has no newer stock - nothing published this time')
+        tstr, items, sis, qn = lap
+        cols = sis
     print(f'stock rows {len(items)}, catalog branches in the file {len(cols)} of {len(codes)}')
     if len(items) < 20000 or len(cols) < 0.8 * len(codes):
         sys.exit('stock file looks incomplete - nothing published this time')
-    qn = {}
-    nz = np.nonzero(A)
-    for a, b in zip(*nz):
-        qn[(sis[b], items[a])] = int(A[a, b])
     in_file = set(sis)
     tm, tn = {}, {}
     for (si, _), q in qm.items():
@@ -264,7 +323,6 @@ def main():
         dq = qn.get(k_, 0) - qm.get(k_, 0)
         if dq:
             chg.setdefault(k_[0], {})[k_[1]] = dq
-    tstr = t0.strftime('%Y-%m-%d %H:%M')
     os.makedirs(f'{OUT}/{key}/b', exist_ok=True); os.makedirs(f'{OUT}/{key}/i', exist_ok=True)
 
     # transfer lines, per scope: share out what each sender still has spare and what each receiver still needs
@@ -300,7 +358,7 @@ def main():
             s[it].sort(key=lambda z: -z[1])
         json.dump(s, open(f'{OUT}/{key}/i/{k:02d}.json', 'w'), separators=(',', ':'))
     miss = sorted(set(range(len(codes))) - in_file)        # branches missing from this file keep their morning stock on the site
-    json.dump({'t': tstr, 'sx': sx, 'rows': len(items), 'branches': len(cols), 'miss': miss, 'changed': sum(len(v) for v in chg.values())},
+    json.dump({'t': tstr, 'sx': sx, 'src': 'web' if got is not None else 'pc', 'rows': len(items), 'branches': len(cols), 'miss': miss, 'changed': sum(len(v) for v in chg.values())},
               open(f'{OUT}/{key}/meta.json', 'w'))
     open(f'{OUT}/index.html', 'w').write('<!doctype html><title>.</title>')
     open(f'{OUT}/robots.txt', 'w').write('User-agent: *\nDisallow: /\n')
