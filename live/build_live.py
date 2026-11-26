@@ -44,25 +44,43 @@ def code(v):
 
 
 def download(url, path, tries=4):
+    """POST the export form. Optional repository secrets, for when the website team allows this job in:
+    STOCK_EXPORT_URL (a different export address) and STOCK_HEADER (one extra request header, "Name: value").
+    A bot-check page is not retried: waiting a few minutes does not get past it, and retries only add load."""
     if os.environ.get('LOCAL_STOCK'):                     # local test: use a stock file already downloaded
         return datetime.strptime(os.environ['LOCAL_STOCK_TIME'], '%Y-%m-%d %H:%M').replace(tzinfo=RIYADH), os.environ['LOCAL_STOCK']
+    url = os.environ.get('STOCK_EXPORT_URL', '').strip() or url
+    extra = os.environ.get('STOCK_HEADER', '').strip()
+    if extra:
+        print('::add-mask::' + extra.split(':', 1)[-1].strip())
     for k in range(tries):
         t0 = datetime.now(RIYADH)
-        r = subprocess.run(['curl', '-sS', '--fail', '--max-time', '900', '-o', path, '-w', '%{http_code} %{content_type}', '-X', 'POST',
-                            '--data-urlencode', 'warehouse_option=all', '--data-urlencode', 'warehouse_codes=',
-                            '--data-urlencode', 'sku_option=all', '--data-urlencode', 'skus=',
-                            '--data-urlencode', 'download_excel=1', url], capture_output=True, text=True)
+        cmd = ['curl', '-sS', '--fail', '--max-time', '900', '-o', path, '-w', '%{http_code} %{content_type}', '-X', 'POST']
+        if extra:
+            cmd += ['-H', extra]
+        cmd += ['--data-urlencode', 'warehouse_option=all', '--data-urlencode', 'warehouse_codes=',
+                '--data-urlencode', 'sku_option=all', '--data-urlencode', 'skus=',
+                '--data-urlencode', 'download_excel=1', url]
+        r = subprocess.run(cmd, capture_output=True, text=True)
         n = os.path.getsize(path) if os.path.exists(path) else 0
         ok = r.returncode == 0 and n > 1_000_000
-        kind = ''
+        kind, check = '', False
         if n and not ok:                                  # say what came back: status, type and the page title only
             head = open(path, 'rb').read(20000).decode('utf-8', 'ignore')
             m = re.search(r'<title[^>]*>([^<]{0,200})', head, re.I)
             title = re.sub(r'[^A-Za-z0-9\u0600-\u06FF .,:()-]', '', m.group(1)).strip()[:70] if m else ''
-            kind = f' (not the Excel file: HTTP {r.stdout.strip()[:60]}{", title: " + title if title else ""})'
+            low = head.lower()
+            by = ('SiteGround anti-bot' if 'sgcaptcha' in low else 'Cloudflare' if 'cloudflare' in low or 'cf-chl' in low
+                  else 'Imunify360' if 'imunify' in low else '')
+            check = bool(by) or 'one moment' in title.lower() or 'just a moment' in title.lower()
+            kind = (f' (not the Excel file: HTTP {r.stdout.strip()[:60]}{", title: " + title if title else ""}'
+                    f'{", bot check by " + by if by else ""})')
         print(f'download try {k + 1}: exit {r.returncode}, {n} bytes{kind}, {(datetime.now(RIYADH) - t0).seconds}s', flush=True)
         if ok:
             return t0, path
+        if check:
+            print('the website answers with a bot-check page: not retrying (the website team has to allow this job)')
+            break
         if k < tries - 1:
             time.sleep(60 * (k + 1))                      # the website is sometimes busy: wait 1, 2, 3 minutes
     return None

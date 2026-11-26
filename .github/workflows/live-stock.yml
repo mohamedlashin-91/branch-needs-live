@@ -64,6 +64,8 @@ jobs:
       - name: Download the website stock and build the files
         env:
           STOCK_URL: ${{ secrets.STOCK_URL }}
+          STOCK_EXPORT_URL: ${{ secrets.STOCK_EXPORT_URL }}
+          STOCK_HEADER: ${{ secrets.STOCK_HEADER }}
         run: python3 -u live/build_live.py
       - uses: actions/configure-pages@v5
       - id: upload
