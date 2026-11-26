@@ -1,12 +1,16 @@
 name: Live branch stock
-# Every 30 minutes from 10:07 AM to 12:07 AM Riyadh time (GitHub times are UTC = Riyadh - 3 h).
-# GitHub's own schedule is often late or skipped, so each run also starts the next one itself (job "next"),
-# at the next :07 / :37 slot, until 12:07 AM. The schedule below only has to fire once in the morning.
-# Publishes branch stock only (no warehouse stock) for the Branch Needs site. Manual run: Actions > Run workflow.
+# Publishes branch stock (no warehouse stock) for the Branch Needs site every 30 minutes, at :07 and :37,
+# from 10:07 AM to 12:07 AM Riyadh time (GitHub times are UTC = Riyadh - 3 h).
+# It keeps itself running day and night: each run starts the next one (job "next"); at night it only
+# waits (job "publish" is skipped) and starts the 10:07 AM run itself, so it never depends on GitHub's own
+# timer, which is often hours late or skipped. If starting the next run fails, it retries for up to 20
+# minutes and then job "rescue" tries again. The schedule below is only a backup that restarts it.
+# Manual restart: Actions > Live branch stock > Run workflow. Pause: add an empty file live/OFF.
 on:
   schedule:
     - cron: '7,37 7-20 * * *'
     - cron: '7 21 * * *'
+    - cron: '20 3,5 * * *'
   workflow_dispatch:
   push:
     branches: [main]
@@ -20,7 +24,22 @@ concurrency:
   group: live-stock
   cancel-in-progress: false
 jobs:
+  when:
+    # Publish only in the day window (10:00 AM - 12:20 AM Riyadh) or when the workflow itself was changed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      day: ${{ steps.t.outputs.day }}
+    steps:
+      - id: t
+        run: |
+          m=$(( 10#$(date -u +%H) * 60 + 10#$(date -u +%M) ))
+          if [ "${{ github.event_name }}" = "push" ] || { [ $m -ge 420 ] && [ $m -le 1280 ]; }; then d=true; else d=false; fi
+          echo "day=$d" >> "$GITHUB_OUTPUT"; echo "publish now: $d (UTC $(date -u +%H:%M))"
+
   publish:
+    needs: when
+    if: needs.when.outputs.day == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
@@ -81,15 +100,16 @@ jobs:
           fi
 
   next:
-    # Start the next run at the next :07 / :37 slot (10:07 AM - 12:07 AM Riyadh), even if this run failed.
-    # Only one run of this workflow can run at a time and only one can wait (concurrency above), so there is
-    # never more than one chain: a scheduled run that comes in meanwhile simply takes the waiting place.
-    needs: publish
+    # Wait for the next :07 / :37 slot of the day window and start the next run. After the 12:07 AM run it
+    # waits through the night in up to two long waits (a job may run at most 6 hours), so the 10:07 AM run
+    # starts by itself. Only one run can run and one wait at a time (concurrency above), so there is never
+    # more than one chain: a backup scheduled run that comes in meanwhile simply takes the waiting place.
+    needs: [when, publish]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 355
     steps:
-      - name: Wait for the next half hour, then start the next run
+      - name: Wait for the next slot, then start the next run
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -97,15 +117,35 @@ jobs:
           import datetime as dt
           now = dt.datetime.now(dt.timezone.utc)
           t = now.replace(second=0, microsecond=0)
-          while not (t.minute in (7, 37) and (t - now).total_seconds() >= 150):
+          def day(t):
+              return t.minute in (7, 37) and (7 <= t.hour <= 20 or (t.hour == 21 and t.minute == 7))
+          while not (day(t) and (t - now).total_seconds() >= 150):
               t += dt.timedelta(minutes=1)
-          day = 7 <= t.hour <= 20 or (t.hour == 21 and t.minute == 7)
-          print(int((t - now).total_seconds()) - 40 if day else -1)
+          w = int((t - now).total_seconds()) - 40
+          print(min(w, 19800))   # at most 5.5 hours; a night run then waits the rest
           PY
           )
-          if [ "$wait" -lt 0 ]; then echo "last run of the day - the schedule starts tomorrow's runs"; exit 0; fi
           echo "next run in $(( (wait + 40) / 60 )) minutes"
           sleep "$wait"
-          gh workflow run live-stock.yml --repo "${{ github.repository }}" --ref main
-          echo "next run started"
+          for i in $(seq 1 20); do
+            if gh workflow run live-stock.yml --repo "${{ github.repository }}" --ref main; then echo "next run started"; exit 0; fi
+            echo "could not start the next run (try $i of 20) - trying again in 60 seconds"; sleep 60
+          done
+          exit 1
 
+  rescue:
+    # Only if "next" did not start the next run (GitHub error, runner lost): start it now, retrying.
+    needs: next
+    if: always() && needs.next.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Start the next run now
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for i in $(seq 1 30); do
+            if gh workflow run live-stock.yml --repo "${{ github.repository }}" --ref main; then echo "next run started"; exit 0; fi
+            echo "could not start the next run (try $i of 30) - trying again in 60 seconds"; sleep 60
+          done
+          exit 1
