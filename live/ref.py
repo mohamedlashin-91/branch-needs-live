@@ -5,11 +5,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_live import SITE, get_json
 
 url = os.environ['STOCK_URL'].strip()
-key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
+key = hashlib.sha256((url + '|bn-live-2').encode()).hexdigest()[:24]      # live folder (masked, never printed)
+lrk = hashlib.sha256((url + '|bn-lr-2').encode()).hexdigest()[:24]        # link file on the site, a different name
 print(f'::add-mask::{key}')
+print(f'::add-mask::{lrk}')
 import urllib.parse
 print(f'::add-mask::{urllib.parse.urlparse(url).hostname}')
-ref = get_json(f'{SITE}lr_{key}.json')
+ref = get_json(f'{SITE}lr_{lrk}.json')
 print(f"::add-mask::{ref['sx']}")
 json.dump(ref, open('ref.json', 'w'))
 with open(os.environ.get('GITHUB_OUTPUT', '/dev/null'), 'a') as f:

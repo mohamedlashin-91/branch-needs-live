@@ -71,7 +71,7 @@ def download(url, path, tries=4):
 def publish_off(why):
     """Kill switch: publish only a meta.json the site will not accept (sx 'off'), so pages show the morning numbers."""
     url = os.environ['STOCK_URL'].strip()
-    key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
+    key = hashlib.sha256((url + '|bn-live-2').encode()).hexdigest()[:24]
     print(f'::add-mask::{key}'); print(f'::add-mask::{urllib.parse.urlparse(url).hostname}')
     os.makedirs(f'{OUT}/{key}', exist_ok=True)
     json.dump({'t': datetime.now(RIYADH).strftime('%Y-%m-%d %H:%M'), 'sx': 'off'}, open(f'{OUT}/{key}/meta.json', 'w'))
@@ -143,7 +143,7 @@ def main():
     if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'OFF')):
         return publish_off('live/OFF is present')
     url = os.environ['STOCK_URL'].strip()
-    key = hashlib.sha256((url + '|bn-live').encode()).hexdigest()[:24]
+    key = hashlib.sha256((url + '|bn-live-2').encode()).hexdigest()[:24]
     print(f'::add-mask::{key}'); print(f'::add-mask::{urllib.parse.urlparse(url).hostname}')
     ref = json.load(open('ref.json')) if os.path.exists('ref.json') else get_json(f'{SITE}lr_{key}.json')
     sx, codes, BR = ref['sx'], ref['codes'], ref['br']

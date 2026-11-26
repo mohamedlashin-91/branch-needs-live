@@ -100,23 +100,25 @@ jobs:
           last=$(python3 - <<'PY'
           import hashlib, json, os, urllib.request
           from datetime import datetime, timedelta, timezone
-          k = hashlib.sha256((os.environ['STOCK_URL'].strip() + '|bn-live').encode()).hexdigest()[:24]
-          print(f'::add-mask::{k}')
+          k = hashlib.sha256((os.environ['STOCK_URL'].strip() + '|bn-live-2').encode()).hexdigest()[:24]
           try:
               m = json.load(urllib.request.urlopen(f'https://mohamedlashin-91.github.io/branch-needs-live/{k}/meta.json', timeout=30))
               t = datetime.strptime(m['t'], '%Y-%m-%d %H:%M').replace(tzinfo=timezone(timedelta(hours=3)))
               age = (datetime.now(timezone.utc) - t).total_seconds() / 60
-              print(f"{m['t']} {int(age)}")
+              print(t.strftime('%Y-%m-%d_%H:%M'), int(age))
           except Exception:
-              print('unknown 999')
+              print('unknown', 999)
           PY
           )
-          t=${last% *}; age=${last##* }
+          t=$(echo "$last" | tail -1 | cut -d' ' -f1 | tr -cd '0-9:_-' | tr '_' ' '); age=$(echo "$last" | tail -1 | cut -d' ' -f2 | tr -cd '0-9')
           echo "last good stock: $t ($age minutes ago)"
-          [ "$age" -lt 75 ] && exit 0
-          n=$(gh issue list --repo "${{ github.repository }}" --state open --search "Live stock is not updating in:title" --json number --jq 'length')
-          if [ "$n" = "0" ]; then
-            gh issue create --repo "${{ github.repository }}" --title "Live stock is not updating" --body "The live branch stock has not updated since $t (Riyadh). The latest run could not get the stock Excel file from the store website: $RUN_URL. Branch pages keep the last good stock and show 'Not updated since'. This issue closes itself when the stock updates again."
+          [ "${age:-999}" -lt 75 ] && exit 0
+          body="The live branch stock has not updated since ${t:-unknown} (Riyadh). The latest run could not get the stock Excel file from the store website: $RUN_URL. Branch pages keep the last good stock and show 'Not updated since'. This issue closes itself when the stock updates again."
+          n=$(gh issue list --repo "${{ github.repository }}" --state open --search "Live stock is not updating in:title" --json number --jq '.[0].number // empty')
+          if [ -z "$n" ]; then
+            gh issue create --repo "${{ github.repository }}" --title "Live stock is not updating" --body "$body"
+          else
+            gh issue edit "$n" --repo "${{ github.repository }}" --body "$body"
           fi
       - name: Close the alert when the stock updates again
         if: success()
