@@ -43,7 +43,7 @@ def code(v):
     return str(v).strip()
 
 
-def download(url, path, tries=2):
+def download(url, path, tries=4):
     if os.environ.get('LOCAL_STOCK'):                     # local test: use a stock file already downloaded
         return datetime.strptime(os.environ['LOCAL_STOCK_TIME'], '%Y-%m-%d %H:%M').replace(tzinfo=RIYADH), os.environ['LOCAL_STOCK']
     for k in range(tries):
@@ -52,12 +52,17 @@ def download(url, path, tries=2):
                             '--data-urlencode', 'warehouse_option=all', '--data-urlencode', 'warehouse_codes=',
                             '--data-urlencode', 'sku_option=all', '--data-urlencode', 'skus=',
                             '--data-urlencode', 'download_excel=1', url], capture_output=True, text=True)
-        ok = r.returncode == 0 and os.path.exists(path) and os.path.getsize(path) > 1_000_000
-        print(f'download try {k + 1}: exit {r.returncode}, {os.path.getsize(path) if os.path.exists(path) else 0} bytes, '
-              f'{(datetime.now(RIYADH) - t0).seconds}s')
+        n = os.path.getsize(path) if os.path.exists(path) else 0
+        ok = r.returncode == 0 and n > 1_000_000
+        kind = ''
+        if n and not ok:                                  # say what came back, without printing any of it
+            head = open(path, 'rb').read(400).lower()
+            kind = ' (a web page, not the Excel file)' if b'<html' in head or b'<!doctype' in head else ' (not the Excel file)'
+        print(f'download try {k + 1}: exit {r.returncode}, {n} bytes{kind}, {(datetime.now(RIYADH) - t0).seconds}s')
         if ok:
             return t0, path
-        time.sleep(60)
+        if k < tries - 1:
+            time.sleep(60 * (k + 1))                      # the website is sometimes busy: wait 1, 2, 3 minutes
     sys.exit('stock website did not answer - nothing published this time')
 
 
