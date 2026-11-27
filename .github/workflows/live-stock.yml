@@ -156,6 +156,7 @@ jobs:
       - name: Wait for the next slot, then start the next run
         env:
           GH_TOKEN: ${{ github.token }}
+          STOCK_URL: ${{ secrets.STOCK_URL }}
         run: |
           wait=$(python3 - <<'PY'
           import datetime as dt
@@ -170,7 +171,21 @@ jobs:
           PY
           )
           echo "next run in $(( (wait + 40) / 60 )) minutes"
-          sleep "$wait"
+          # While waiting, look once a minute (headers only) for a new morning build of the site. When one goes live,
+          # start the next run at once, so the branch pages get live stock again within minutes, not at the next slot.
+          lr=$(python3 -c "import hashlib,os;print('https://branch-needs.web.app/data/lr_'+hashlib.sha256((os.environ['STOCK_URL'].strip()+'|bn-lr-2').encode()).hexdigest()[:24]+'.json')")
+          etag() { curl -sI --max-time 20 "$lr" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="etag:"||tolower($1)=="content-length:"{s=s $2} END{print s}'; }
+          e0=$(etag); end=$(( $(date +%s) + wait ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            left=$(( end - $(date +%s) ))
+            if [ "$left" -le 60 ]; then sleep "$left"; break; fi
+            sleep 60
+            e=$(etag); [ -z "$e0" ] && e0="$e"
+            h=$(( 10#$(date -u +%H) ))
+            if [ -n "$e" ] && [ "$e" != "$e0" ] && [ "$h" -ge 3 ] && [ "$h" -le 22 ] && [ $(( end - $(date +%s) )) -gt 360 ]; then
+              echo "a new morning build went live - starting the next run now"; break
+            fi
+          done
           for i in $(seq 1 20); do
             if gh workflow run live-stock.yml --repo "${{ github.repository }}" --ref main; then echo "next run started"; exit 0; fi
             echo "could not start the next run (try $i of 20) - trying again in 60 seconds"; sleep 60
